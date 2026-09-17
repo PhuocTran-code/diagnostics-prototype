@@ -1,0 +1,4 @@
+-- Gold layer: star schema
+-- Owner: A (Junseog Lee)
+-- TODO: dim_patient, dim_date, dim_site, dim_referrer, dim_test, dim_procedure
+--       fact_pathology_result, fact_imaging_study

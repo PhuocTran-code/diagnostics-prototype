@@ -1,0 +1,6 @@
+-- Dashboard views (gold layer only)
+-- Owner: B (Phuoc Tran)
+-- D1: v_turnaround        — turnaround time by site and priority
+-- D2: v_abnormal_rate     — abnormal and critical result rate
+-- D3: v_mpi_impact        — raw identifiers vs golden patients
+-- TODO: implement

@@ -1,0 +1,3 @@
+-- Schema validation queries (V1-V4 from 01_source_schemas.sql)
+-- Owner: A (Junseog Lee)
+-- TODO: copy V1-V4 validation queries here once gold schema is done
