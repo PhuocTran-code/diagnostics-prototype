@@ -1,50 +1,15 @@
-#version: "3.9"
-
 services:
-  python:
-    build: ./python
-    container_name: student-python
-    volumes:
-      - ./workspace:/workspace
-    stdin_open: true
-    tty: true
-    depends_on:
-      - postgres
-      - neo4j
-      - clickhouse
-
   postgres:
     image: postgres:15
     container_name: student-postgres
     environment:
       POSTGRES_USER: student
       POSTGRES_PASSWORD: student
-      POSTGRES_DB: lab
+      POSTGRES_DB: medscan
     ports:
       - "5433:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
-
-  neo4j:
-    image: neo4j:5
-    container_name: student-neo4j
-    environment:
-      NEO4J_AUTH: neo4j/password
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    volumes:
-      - ./data/neo4j:/data
-
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    container_name: student-clickhouse
-    ports:
-      - "8123:8123"
-      - "9000:9000"
-    volumes:
-      - ./data/clickhouse:/var/lib/clickhouse
-
 
   cloudbeaver:
     image: dbeaver/cloudbeaver:latest
@@ -55,3 +20,13 @@ services:
       - postgres
     volumes:
       - ./data/cloudbeaver:/opt/cloudbeaver/workspace
+
+  python:
+    build: ./python
+    container_name: student-python
+    volumes:
+      - .:/workspace
+    stdin_open: true
+    tty: true
+    depends_on:
+      - postgres

@@ -1,7 +1,3 @@
-pandas
-numpy
-sqlalchemy
 psycopg2-binary
-duckdb
-neo4j
-clickhouse-connect
+pandas
+sqlalchemy

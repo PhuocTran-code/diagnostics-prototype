@@ -5,6 +5,7 @@
 
 """Load source tables into Bronze as full snapshots, preserving source values."""
 
+import os
 from uuid import uuid4
 
 import psycopg2
@@ -90,12 +91,14 @@ def main():
     batch_id = str(uuid4())
     results = []
 
+    # Connection defaults match the lab stack. Override with PG* env vars
+    # to target another database without editing code.
     with psycopg2.connect(
-        host="postgres",
-        port=5432,
-        dbname="lab",
-        user="student",
-        password="student",
+        host=os.environ.get("PGHOST", "postgres"),
+        port=int(os.environ.get("PGPORT", "5432")),
+        dbname=os.environ.get("PGDATABASE", "medscan"),
+        user=os.environ.get("PGUSER", "student"),
+        password=os.environ.get("PGPASSWORD", "student"),
     ) as conn:
         with conn.cursor() as cur:
             cur.execute("CREATE SCHEMA IF NOT EXISTS bronze")

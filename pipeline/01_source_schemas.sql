@@ -145,7 +145,7 @@ INSERT INTO lis_a.result  VALUES
 DROP SCHEMA IF EXISTS silver CASCADE; CREATE SCHEMA silver;
 
 -- One conformed row per source-system patient record. This is what
--- gets exported to Neo4j as :PatientRecord nodes for matching.
+-- is the input to identity resolution (05_resolve_identity.sql).
 CREATE TABLE silver.patient_source (
     patient_source_key  BIGSERIAL PRIMARY KEY,
     source_system       VARCHAR(10) NOT NULL,   -- lis_a / lis_b / ris
@@ -273,7 +273,7 @@ LEFT JOIN silver.patient_source p ON r.patient_source_key = p.patient_source_key
 WHERE p.patient_source_key IS NULL;
 
 -- V2: every patient_source row has been resolved by the graph MPI step
--- Expect: 0, once 04_export_to_neo4j / 05_resolve_identity has run
+-- Expect: 0, once 05_resolve_identity has run
 SELECT COUNT(*) AS unresolved_patient_records
 FROM silver.patient_source ps
 LEFT JOIN silver.patient_xref x ON ps.patient_source_key = x.patient_source_key
