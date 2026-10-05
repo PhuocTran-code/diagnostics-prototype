@@ -1,5 +1,5 @@
 -- Bronze -> Silver row-count reconciliation and silver data-quality checks
--- Owner: E (Zeming Liu)
+-- Owner: B (Phuoc Tran)
 --
 -- Q1: data-quality domain checks — all columns should be 0
 -- Q2: row-count reconciliation per source table (last SELECT, printed by run_pipeline.py)
