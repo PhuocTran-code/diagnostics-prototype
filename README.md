@@ -98,7 +98,7 @@ tests/
   validate_schema.py       gold structure, FK integrity, no nulls, no negatives   A
 
 run_pipeline.py            runs all 8 steps then all 3 tests in order
-docker-compose.yml         postgres 15 · cloudbeaver · python  (3 services)
+docker-compose.yml         postgres 15 · cloudbeaver · metabase · python  (4 services)
 ```
 
 ---
@@ -117,12 +117,13 @@ cd diagnostics-prototype
 docker compose up -d
 ```
 
-Verify three containers are up:
+Verify four containers are up:
 
 ```bash
 docker compose ps
 # student-postgres      Up
 # student-cloudbeaver   Up
+# student-metabase      Up
 # student-python        Up
 ```
 
@@ -193,7 +194,62 @@ SELECT * FROM dashboard.v_abnormal_rate;
 SELECT * FROM dashboard.v_mpi_impact;
 ```
 
-### 5. Run one step at a time (optional)
+### 5. View the dashboard in Metabase
+
+Metabase is a BI tool that renders the dashboard views as interactive charts. The pipeline must have been run at least once (step 2) before connecting.
+
+1. Open **http://localhost:3030** in your browser
+2. Log in with the admin account created during first-time setup (see note below)
+3. Navigate to **Browse → Our analytics → MedScan Diagnostics Dashboard**
+
+The dashboard contains three charts:
+
+| Chart | Source view | What it shows |
+|---|---|---|
+| **Abnormal Rate by Test (Pathology)** | `dashboard.v_abnormal_rate` | Average abnormal % per test name, pathology only, sorted descending |
+| **Turnaround Time by Site (Pathology)** | `dashboard.v_turnaround` | Avg turnaround minutes per site, split by ROUTINE vs URGENT |
+| **MPI Impact Summary** | `dashboard.v_mpi_impact` | Raw identifiers vs golden patients vs duplicates collapsed |
+
+> **First-time Metabase setup** (one-off, only needed when the `./data/metabase` volume is new):
+> 1. Open http://localhost:3030 — Metabase shows a welcome wizard
+> 2. Create an admin account with any email/password
+> 3. Add a database connection:
+>    - Type: **PostgreSQL** · Display name: `medscan`
+>    - Host: `postgres` · Port: `5432` · Database: `medscan`
+>    - Username: `student` · Password: `student`
+> 4. Finish setup — Metabase will sync the schemas automatically
+> 5. Go to **New → SQL query**, select the `medscan` database, paste the query below, then save as a chart:
+>
+> ```sql
+> -- Chart 1: Abnormal Rate by Test
+> SELECT name,
+>        ROUND(AVG(abnormal_pct), 1) AS abnormal_pct
+> FROM dashboard.v_abnormal_rate
+> WHERE request_type = 'PATHOLOGY'
+>   AND abnormal_pct IS NOT NULL
+> GROUP BY name
+> ORDER BY abnormal_pct DESC;
+>
+> -- Chart 2: Turnaround Time by Site
+> SELECT site_code, priority,
+>        avg_turnaround_minutes,
+>        p50_minutes,
+>        p90_minutes
+> FROM dashboard.v_turnaround
+> WHERE request_type = 'PATHOLOGY'
+> ORDER BY site_code, priority;
+>
+> -- Chart 3: MPI Impact Summary
+> SELECT 'Raw Identifiers'    AS category, raw_identifiers    AS value FROM dashboard.v_mpi_impact
+> UNION ALL
+> SELECT 'Golden Patients',                golden_patients              FROM dashboard.v_mpi_impact
+> UNION ALL
+> SELECT 'Duplicates Collapsed',           duplicates_collapsed         FROM dashboard.v_mpi_impact;
+> ```
+>
+> After saving all three charts, create a new dashboard and add them.
+
+### 7. Run one step at a time (optional)
 
 Useful when you want to inspect the database state between layers:
 
@@ -215,7 +271,7 @@ $P < tests/validate_mpi.sql
 docker compose exec python python /workspace/tests/validate_schema.py
 ```
 
-### 6. Reset and re-run from scratch
+### 8. Reset and re-run from scratch
 
 ```bash
 docker compose down -v     # destroys the postgres volume — all data is wiped
