@@ -21,6 +21,18 @@ services:
     volumes:
       - ./data/cloudbeaver:/opt/cloudbeaver/workspace
 
+  metabase:
+    image: metabase/metabase:latest
+    container_name: student-metabase
+    ports:
+      - "3030:3000"
+    volumes:
+      - ./data/metabase:/metabase-data
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+    depends_on:
+      - postgres
+
   python:
     build: ./python
     container_name: student-python
