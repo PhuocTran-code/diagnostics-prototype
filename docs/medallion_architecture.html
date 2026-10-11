@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Diagnostic services warehouse: medallion architecture</title>
+<title>Master patient index on a medallion architecture</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root{--ink:#1f2a37;--soft:#55606e;--rule:#d7dbe0;--panel:#f6f7f9;--sans:"IBM Plex Sans","Segoe UI",Helvetica,Arial,sans-serif;--mono:"IBM Plex Mono",Consolas,monospace}
@@ -12,14 +12,15 @@
   header,main,footer{max-width:1040px;margin:0 auto;padding:0 40px}
   header{padding-top:48px;padding-bottom:24px;border-bottom:1px solid var(--rule)}
   h1{font-size:28px;font-weight:600;margin:0 0 8px;line-height:1.25}
-  header p,.lead{margin:0 0 20px;color:var(--soft);max-width:70ch}
+  header p,.lead{margin:0 0 20px;color:var(--soft);max-width:72ch}
   section{padding:40px 0;border-bottom:1px solid var(--rule)}
   section:last-of-type{border-bottom:none}
   h2{font-size:21px;font-weight:600;margin:0 0 6px}
+  h3{font-size:17px;font-weight:600;margin:24px 0 6px}
   .figure{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:20px;overflow-x:auto}
   .figure svg{display:block;max-width:100%;height:auto;margin:0 auto}
   figcaption{font-size:14px;color:var(--soft);margin-top:10px}
-  ul{margin:16px 0 0;padding-left:20px;max-width:78ch}
+  ul{margin:14px 0 0;padding-left:20px;max-width:78ch}
   li{margin-bottom:6px}
   code{font-family:var(--mono);font-size:.9em;background:var(--panel);padding:1px 5px;border-radius:4px}
   table{border-collapse:collapse;width:100%;font-size:15px;margin-top:12px}
@@ -33,77 +34,116 @@
 <body>
 
 <header>
-  <h1>Diagnostic services warehouse: medallion architecture</h1>
-  <p>A pathology and radiology provider with two laboratory systems (<code>lis_a</code>, <code>lis_b</code>) and one radiology system (<code>ris</code>). Data moves through bronze, silver, graph and gold layers into dashboards. Source, silver, audit DDL and sample rows are in <code>diagnostics_source_schemas.sql</code>; the identity-resolution logic is in <code>diagnostics_graph_mpi.cypher</code>. The graph layer is a deterministic, scaled-down implementation of the graph-based master patient index recommended in Assignment 1 (R1).</p>
+  <h1>Master patient index on a medallion architecture</h1>
+  <p>Business problem: patient identity is fragmented across two laboratory systems (<code>lis_a</code>, <code>lis_b</code>) and one radiology system (<code>ris</code>), each with its own patient identifier. The solution resolves every source record to a single <code>mpi_id</code> in the silver layer, and every analytic fact in gold joins on that one identifier. Companion files: <code>diagnostics_source_schemas.sql</code> (sources) and <code>silver_master_patient_index.sql</code> (tested matching logic).</p>
 </header>
 
 <main>
 
-<section id="sources">
-  <h2>1. Source systems</h2>
-  <p class="lead">Three tables each. The systems disagree in ways silver has to fix.</p>
-  <table>
-    <thead><tr><th></th><th>lis_a</th><th>lis_b</th><th>ris</th></tr></thead>
-    <tbody>
-      <tr><td>Tables</td><td>patient, request, result</td><td>patients, episodes, observations</td><td>patient, exam_order, report</td></tr>
-      <tr><td>Patient key</td><td><code>pat_no</code></td><td><code>patient_guid</code></td><td><code>ris_patient_id</code></td></tr>
-      <tr><td>Shared identifier</td><td colspan="3">Medicare number plus date of birth, used to match the same person across systems</td></tr>
-      <tr><td>Test coding</td><td>Local codes (HB, GLUC)</td><td>LOINC (718-7)</td><td>Procedure code and modality (CTABDO, CT)</td></tr>
-      <tr><td>Dates</td><td>Text, DD/MM/YYYY</td><td>ISO timestamp, UTC</td><td>Timestamp, local</td></tr>
-      <tr><td>Sex</td><td>M / F / U</td><td>male / female / unknown</td><td>M / F / U</td></tr>
-      <tr><td>Status</td><td>IP / FN / CN</td><td>in_progress / final / cancelled</td><td>SCHEDULED / COMPLETED / CANCELLED</td></tr>
-    </tbody>
-  </table>
-  <p class="lead">The sample rows include one patient who appears in all three systems under three different keys, and one patient who appears in <code>lis_a</code> only. The graph layer (section 4) resolves the first into one golden patient and leaves the second unmatched — both outcomes are expected and are what the end-to-end test checks for.</p>
-</section>
-
 <section id="conceptual">
-  <h2>2. Conceptual model</h2>
-  <p class="lead">A patient is referred for a diagnostic request. Pathology requests produce test results; imaging requests produce a report. Both happen at a site.</p>
+  <h2>1. Conceptual model</h2>
+  <p class="lead">One <code>PATIENT</code> is the person. Each system holds its own <code>SOURCE_PATIENT_RECORD</code> for that person under a different identifier. Diagnostic activity attaches to the person, not to any one system's record.</p>
   <figure class="figure">
     <div class="mermaid">
 erDiagram
+  PATIENT ||--|{ SOURCE_PATIENT_RECORD : "is known in each system as"
+  SOURCE_SYSTEM ||--o{ SOURCE_PATIENT_RECORD : holds
+  MATCH_RULE ||--o{ SOURCE_PATIENT_RECORD : "linked by"
   PATIENT ||--o{ DIAGNOSTIC_REQUEST : "is subject of"
   REFERRER ||--o{ DIAGNOSTIC_REQUEST : orders
   SITE ||--o{ DIAGNOSTIC_REQUEST : "performed at"
   DIAGNOSTIC_REQUEST ||--o{ PATHOLOGY_RESULT : "pathology yields"
   DIAGNOSTIC_REQUEST ||--o| IMAGING_REPORT : "imaging yields"
-  TEST ||--o{ PATHOLOGY_RESULT : codes
-  PROCEDURE ||--o{ IMAGING_REPORT : codes
     </div>
-    <figcaption>Figure 1. Conceptual model. One patient record represents the person across all three systems. A request is either pathology or imaging.</figcaption>
+    <figcaption>Figure 1. Conceptual model. The one to many between <code>PATIENT</code> and <code>SOURCE_PATIENT_RECORD</code> is the fragmentation; <code>MATCH_RULE</code> records how each source record was linked to the person.</figcaption>
   </figure>
+  <ul>
+    <li>A patient must have at least one source record and may have one per system. Three records for one person is the normal case for a patient who has used pathology at both labs and had imaging.</li>
+    <li>The match rule is part of the model, not an implementation detail. Being able to say "these two records were linked on Medicare number and date of birth" is what makes the index auditable.</li>
+    <li>Requests hang off the person. Reporting a patient journey across pathology and imaging is a single join once the index exists.</li>
+  </ul>
 </section>
 
 <section id="logical">
-  <h2>3. Logical model (gold layer)</h2>
-  <p class="lead">Star schema with two facts sharing four conformed dimensions. Patient names, dates of birth and Medicare numbers stay in silver; gold holds only what analytics needs.</p>
+  <h2>2. Logical model</h2>
+  <p class="lead">Two parts: the MPI tables in silver where matching happens, and the gold star schema that consumes the resulting identifier.</p>
+
+  <h3>2a. Silver: master patient index</h3>
+  <figure class="figure">
+    <div class="mermaid">
+erDiagram
+  PATIENT_SOURCE ||--|| PATIENT_CROSSWALK : "standardised record"
+  PATIENT_MASTER ||--|{ PATIENT_CROSSWALK : "mpi_id"
+  PATIENT_SOURCE {
+    string source_system PK
+    string source_patient_id PK
+    string medicare_no
+    string surname
+    string first_given_name
+    date date_of_birth
+    string sex_code
+    string postcode
+  }
+  PATIENT_CROSSWALK {
+    string source_system PK
+    string source_patient_id PK
+    string mpi_id FK
+    int match_tier
+    string match_key
+  }
+  PATIENT_MASTER {
+    string mpi_id PK
+    string medicare_no
+    string surname
+    string first_given_name
+    date date_of_birth
+    string sex_code
+    string postcode
+    int source_record_count
+    string source_systems
+    int best_match_tier
+  }
+    </div>
+    <figcaption>Figure 2. Silver MPI tables. <code>patient_source</code> unions the three source patient tables into one shape; <code>patient_crosswalk</code> assigns one <code>mpi_id</code> per source record; <code>patient_master</code> is the golden record built by survivorship.</figcaption>
+  </figure>
+  <table>
+    <thead><tr><th>Match tier</th><th>Rule</th><th>Applies to</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Medicare number + date of birth</td><td>Records that carry a Medicare number. Deterministic, highest confidence.</td></tr>
+      <tr><td>2</td><td>Surname + first given name + date of birth + sex</td><td>Records with no Medicare number. Joins an existing tier 1 cluster if the key matches one, otherwise forms its own cluster.</td></tr>
+      <tr><td>0</td><td>No match</td><td>Record gets its own <code>mpi_id</code> and is re evaluated on the next load.</td></tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>Survivorship for the golden record: first non null value by source priority lis_b, then ris, then lis_a.</li>
+    <li>Identifying attributes (names, date of birth, Medicare number) exist only in these silver tables, behind restricted access.</li>
+  </ul>
+
+  <h3>2b. Gold: star schema keyed on the MPI</h3>
   <figure class="figure">
     <div class="mermaid">
 erDiagram
   DIM_PATIENT ||--o{ FACT_PATHOLOGY_RESULT : patient_key
   DIM_DATE ||--o{ FACT_PATHOLOGY_RESULT : date_key
   DIM_SITE ||--o{ FACT_PATHOLOGY_RESULT : site_key
-  DIM_REFERRER ||--o{ FACT_PATHOLOGY_RESULT : referrer_key
   DIM_TEST ||--o{ FACT_PATHOLOGY_RESULT : test_key
   DIM_PATIENT ||--o{ FACT_IMAGING_STUDY : patient_key
   DIM_DATE ||--o{ FACT_IMAGING_STUDY : date_key
   DIM_SITE ||--o{ FACT_IMAGING_STUDY : site_key
-  DIM_REFERRER ||--o{ FACT_IMAGING_STUDY : referrer_key
   DIM_PROCEDURE ||--o{ FACT_IMAGING_STUDY : procedure_key
   DIM_PATIENT {
     int patient_key PK
-    string patient_id UK
+    string mpi_id UK
     string sex_code
     int birth_year
     string postcode
+    int source_system_count
   }
   DIM_DATE {
     int date_key PK
     date full_date
     int year_number
     int month_number
-    string month_name
     bool is_weekend
   }
   DIM_SITE {
@@ -111,11 +151,6 @@ erDiagram
     string site_code UK
     string site_name
     string state
-  }
-  DIM_REFERRER {
-    int referrer_key PK
-    string provider_number UK
-    string specialty
   }
   DIM_TEST {
     int test_key PK
@@ -135,12 +170,9 @@ erDiagram
     int patient_key FK
     int date_key FK
     int site_key FK
-    int referrer_key FK
     int test_key FK
     string source_system
-    string priority
     numeric result_value
-    string abnormal_flag
     bool is_abnormal
     int turnaround_minutes
   }
@@ -149,103 +181,164 @@ erDiagram
     int patient_key FK
     int date_key FK
     int site_key FK
-    int referrer_key FK
     int procedure_key FK
     string source_system
-    string priority
     string report_status
     bool critical_finding
     int turnaround_hours
   }
     </div>
-    <figcaption>Figure 2. Gold star schema. Surrogate keys on dimensions, natural keys on facts, turnaround time pre computed so dashboards only aggregate.</figcaption>
+    <figcaption>Figure 3. Gold star schema. <code>dim_patient</code> has one row per <code>mpi_id</code> and no direct identifiers. Facts from all three sources resolve to the same <code>patient_key</code>, which is the consolidated view.</figcaption>
   </figure>
-  <p class="lead"><code>dim_patient.patient_id</code> is the golden id produced by the graph layer (<code>silver.patient.golden_id</code>), not a raw source key — this is what lets <code>fact_pathology_result</code> and <code>fact_imaging_study</code> for the same person join on one patient regardless of which of the three systems the underlying request came from.</p>
 </section>
 
 <section id="architecture">
-  <h2>4. Solution architecture</h2>
-  <p class="lead">Five layers, plus audit running alongside all of them. Each layer has one job.</p>
+  <h2>3. Solution architecture</h2>
+  <p class="lead">Standard medallion flow with the MPI as the defining step in silver. Facts cannot be loaded to gold until their patient has an <code>mpi_id</code>.</p>
   <figure class="figure">
-    <svg viewBox="0 0 800 740" width="800" role="img" aria-labelledby="t d" xmlns="http://www.w3.org/2000/svg" font-family="IBM Plex Sans, Segoe UI, Helvetica, Arial, sans-serif">
-      <title id="t">Medallion architecture</title>
-      <desc id="d">Three sources feed bronze, then silver, then a graph identity-resolution layer, then gold, then dashboards. An audit log with validation checks sits alongside.</desc>
+    <svg viewBox="0 0 800 620" width="800" role="img" aria-labelledby="t d" xmlns="http://www.w3.org/2000/svg" font-family="IBM Plex Sans, Segoe UI, Helvetica, Arial, sans-serif">
+      <title id="t">Medallion architecture with master patient index</title>
+      <desc id="d">Three sources feed bronze. Silver standardises patient records and resolves them through a master patient index before building clinical entities. Gold is keyed on the MPI identifier and feeds dashboards. Audit logs every run.</desc>
       <defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#55606e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 
       <rect x="40" y="30" width="200" height="56" rx="8" fill="#e2eef4" stroke="#2a6f8f"/>
       <text x="140" y="54" text-anchor="middle" font-size="15" font-weight="600" fill="#153d4f">lis_a</text>
-      <text x="140" y="74" text-anchor="middle" font-size="12" fill="#2a6f8f">Pathology, nightly CSV extract</text>
+      <text x="140" y="74" text-anchor="middle" font-size="12" fill="#2a6f8f">patient id: pat_no</text>
       <rect x="260" y="30" width="200" height="56" rx="8" fill="#e2eef4" stroke="#2a6f8f"/>
       <text x="360" y="54" text-anchor="middle" font-size="15" font-weight="600" fill="#153d4f">lis_b</text>
-      <text x="360" y="74" text-anchor="middle" font-size="12" fill="#2a6f8f">Pathology, nightly CSV extract</text>
+      <text x="360" y="74" text-anchor="middle" font-size="12" fill="#2a6f8f">patient id: patient_guid</text>
       <rect x="480" y="30" width="200" height="56" rx="8" fill="#e2eef4" stroke="#2a6f8f"/>
       <text x="580" y="54" text-anchor="middle" font-size="15" font-weight="600" fill="#153d4f">ris</text>
-      <text x="580" y="74" text-anchor="middle" font-size="12" fill="#2a6f8f">Radiology, nightly CSV extract</text>
+      <text x="580" y="74" text-anchor="middle" font-size="12" fill="#2a6f8f">patient id: ris_patient_id</text>
       <line x1="140" y1="86" x2="140" y2="118" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
       <line x1="360" y1="86" x2="360" y2="118" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
       <line x1="580" y1="86" x2="580" y2="118" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-      <rect x="40" y="122" width="640" height="76" rx="8" fill="#f8ece0" stroke="#b8763a"/>
+      <rect x="40" y="122" width="640" height="62" rx="8" fill="#f8ece0" stroke="#b8763a"/>
       <text x="60" y="148" font-size="16" font-weight="600" fill="#6e4520">Bronze: raw landing</text>
-      <text x="60" y="170" font-size="13" fill="#8a5a2c">One table per source table, all columns as text, nothing changed</text>
-      <text x="60" y="188" font-size="13" fill="#8a5a2c">Adds _source_system, _loaded_at, _run_id</text>
-      <line x1="360" y1="198" x2="360" y2="230" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
+      <text x="60" y="170" font-size="13" fill="#8a5a2c">Three patient tables and their clinical tables, all text, unchanged, plus _source_system, _loaded_at, _run_id</text>
+      <line x1="360" y1="184" x2="360" y2="216" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-      <rect x="40" y="234" width="640" height="112" rx="8" fill="#eceff3" stroke="#6f7a88"/>
-      <text x="60" y="260" font-size="16" font-weight="600" fill="#2f3743">Silver: clean and conform</text>
-      <text x="60" y="282" font-size="13" fill="#4f5866">Parse dates to one format, map codes via test_code_map (sex, status, LOINC), convert units</text>
-      <text x="60" y="300" font-size="13" fill="#4f5866">Keep one conformed row per source-system patient in patient_source — identity not yet resolved</text>
-      <text x="60" y="318" font-size="13" fill="#4f5866">Tables: patient_source, diagnostic_request, pathology_result, imaging_report, test_code_map</text>
-      <line x1="360" y1="346" x2="360" y2="378" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
+      <rect x="40" y="220" width="640" height="176" rx="8" fill="#eceff3" stroke="#6f7a88"/>
+      <text x="60" y="246" font-size="16" font-weight="600" fill="#2f3743">Silver: standardise, then resolve identity, then conform</text>
 
-      <rect x="40" y="382" width="640" height="94" rx="8" fill="#dcefe9" stroke="#1f7a6c"/>
-      <text x="60" y="408" font-size="16" font-weight="600" fill="#0f3d35">Graph: identity resolution (Neo4j)</text>
-      <text x="60" y="430" font-size="13" fill="#1f6a5c">Load patient_source as :PatientRecord nodes, one per source system</text>
-      <text x="60" y="448" font-size="13" fill="#1f6a5c">Create SAME_AS edges where Medicare number and date of birth agree across systems</text>
-      <text x="60" y="466" font-size="13" fill="#1f6a5c">Resolve each connected group to one golden id; write the crosswalk back to patient_xref</text>
-      <line x1="360" y1="476" x2="360" y2="508" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
+      <rect x="60" y="262" width="180" height="116" rx="6" fill="#ffffff" stroke="#6f7a88"/>
+      <text x="150" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#2f3743">1. patient_source</text>
+      <text x="150" y="304" text-anchor="middle" font-size="12" fill="#4f5866">union of three</text>
+      <text x="150" y="320" text-anchor="middle" font-size="12" fill="#4f5866">patient tables</text>
+      <text x="150" y="336" text-anchor="middle" font-size="12" fill="#4f5866">names, dates, sex</text>
+      <text x="150" y="352" text-anchor="middle" font-size="12" fill="#4f5866">to one format</text>
+      <line x1="240" y1="320" x2="266" y2="320" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-      <rect x="40" y="512" width="640" height="76" rx="8" fill="#faf2d9" stroke="#c19a2a"/>
-      <text x="60" y="538" font-size="16" font-weight="600" fill="#5c4708">Gold: star schema, de identified</text>
-      <text x="60" y="560" font-size="13" fill="#7a5f10">dim_patient (keyed on the graph's golden id), dim_date, dim_site, dim_referrer, dim_test, dim_procedure</text>
-      <text x="60" y="578" font-size="13" fill="#7a5f10">fact_pathology_result, fact_imaging_study with turnaround pre computed</text>
-      <line x1="360" y1="588" x2="360" y2="620" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
+      <rect x="270" y="262" width="180" height="116" rx="6" fill="#fff7d6" stroke="#c19a2a" stroke-width="2"/>
+      <text x="360" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#5c4708">2. Master patient index</text>
+      <text x="360" y="304" text-anchor="middle" font-size="12" fill="#7a5f10">tier 1: Medicare + DOB</text>
+      <text x="360" y="320" text-anchor="middle" font-size="12" fill="#7a5f10">tier 2: name + DOB + sex</text>
+      <text x="360" y="340" text-anchor="middle" font-size="12" fill="#7a5f10">patient_crosswalk</text>
+      <text x="360" y="356" text-anchor="middle" font-size="12" fill="#7a5f10">patient_master</text>
+      <line x1="450" y1="320" x2="476" y2="320" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-      <rect x="40" y="624" width="640" height="76" rx="8" fill="#e3f1ea" stroke="#2f7d5a"/>
-      <text x="60" y="650" font-size="16" font-weight="600" fill="#1d4d38">Dashboard</text>
-      <text x="60" y="672" font-size="13" fill="#2f6b4f">Turnaround time by site and priority, test and study volumes, abnormal and critical results, referrer activity</text>
-      <text x="60" y="690" font-size="13" fill="#2f6b4f">Duplicate identifiers resolved — raw identifiers vs golden patients, the MPI impact metric</text>
+      <rect x="480" y="262" width="180" height="116" rx="6" fill="#ffffff" stroke="#6f7a88"/>
+      <text x="570" y="284" text-anchor="middle" font-size="13" font-weight="600" fill="#2f3743">3. Clinical entities</text>
+      <text x="570" y="304" text-anchor="middle" font-size="12" fill="#4f5866">diagnostic_request</text>
+      <text x="570" y="320" text-anchor="middle" font-size="12" fill="#4f5866">pathology_result</text>
+      <text x="570" y="336" text-anchor="middle" font-size="12" fill="#4f5866">imaging_report</text>
+      <text x="570" y="352" text-anchor="middle" font-size="12" fill="#4f5866">each carries mpi_id</text>
+      <line x1="360" y1="396" x2="360" y2="428" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
 
-      <rect x="700" y="122" width="80" height="578" rx="8" fill="#ebe9f7" stroke="#5b4fa8"/>
+      <rect x="40" y="432" width="640" height="62" rx="8" fill="#faf2d9" stroke="#c19a2a"/>
+      <text x="60" y="458" font-size="16" font-weight="600" fill="#5c4708">Gold: star schema keyed on mpi_id, de identified</text>
+      <text x="60" y="480" font-size="13" fill="#7a5f10">dim_patient (one row per mpi_id), dim_date, dim_site, dim_test, dim_procedure; fact_pathology_result, fact_imaging_study</text>
+      <line x1="360" y1="494" x2="360" y2="526" stroke="#55606e" stroke-width="1.5" marker-end="url(#ah)"/>
+
+      <rect x="40" y="530" width="640" height="72" rx="8" fill="#e3f1ea" stroke="#2f7d5a"/>
+      <text x="60" y="554" font-size="16" font-weight="600" fill="#1d4d38">Dashboard  (dashboard schema + Metabase at :3030)</text>
+      <text x="60" y="572" font-size="13" fill="#2f6b4f">v_turnaround: avg / p50 / p90 turnaround by site and priority  ·  v_abnormal_rate: abnormal % by test / critical % by procedure</text>
+      <text x="60" y="590" font-size="13" fill="#2f6b4f">v_mpi_impact: 108 raw identifiers → 63 golden patients (45 collapsed, 41.7 % collapse rate)</text>
+
+      <rect x="700" y="122" width="80" height="480" rx="8" fill="#ebe9f7" stroke="#5b4fa8"/>
       <text x="740" y="150" text-anchor="middle" font-size="14" font-weight="600" fill="#33296e">Audit</text>
-      <text x="740" y="176" text-anchor="middle" font-size="12" fill="#4a3f8f">run log</text>
-      <text x="740" y="194" text-anchor="middle" font-size="12" fill="#4a3f8f">per layer</text>
-      <text x="740" y="220" text-anchor="middle" font-size="12" fill="#4a3f8f">rows read</text>
-      <text x="740" y="238" text-anchor="middle" font-size="12" fill="#4a3f8f">rows loaded</text>
-      <text x="740" y="256" text-anchor="middle" font-size="12" fill="#4a3f8f">status</text>
-      <text x="740" y="310" text-anchor="middle" font-size="14" font-weight="600" fill="#33296e">Validate</text>
-      <text x="740" y="332" text-anchor="middle" font-size="12" fill="#4a3f8f">orphan</text>
-      <text x="740" y="350" text-anchor="middle" font-size="12" fill="#4a3f8f">checks</text>
-      <text x="740" y="380" text-anchor="middle" font-size="12" fill="#4a3f8f">row count</text>
-      <text x="740" y="398" text-anchor="middle" font-size="12" fill="#4a3f8f">reconciled</text>
-      <text x="740" y="428" text-anchor="middle" font-size="12" fill="#4a3f8f">raw vs</text>
-      <text x="740" y="446" text-anchor="middle" font-size="12" fill="#4a3f8f">golden</text>
-      <text x="740" y="464" text-anchor="middle" font-size="12" fill="#4a3f8f">patients</text>
+      <text x="740" y="178" text-anchor="middle" font-size="12" fill="#4a3f8f">run log</text>
+      <text x="740" y="196" text-anchor="middle" font-size="12" fill="#4a3f8f">row counts</text>
+      <text x="740" y="220" text-anchor="middle" font-size="12" fill="#4a3f8f">match</text>
+      <text x="740" y="238" text-anchor="middle" font-size="12" fill="#4a3f8f">counts by</text>
+      <text x="740" y="256" text-anchor="middle" font-size="12" fill="#4a3f8f">tier</text>
+      <text x="740" y="280" text-anchor="middle" font-size="12" fill="#4a3f8f">unmatched</text>
+      <text x="740" y="298" text-anchor="middle" font-size="12" fill="#4a3f8f">records</text>
     </svg>
-    <figcaption>Figure 3. Solution architecture. Bronze, silver and gold run on PostgreSQL; identity resolution runs on Neo4j; the same layering scales to a cloud platform.</figcaption>
+    <figcaption>Figure 4. Solution architecture. The highlighted box is the step that answers the business problem; everything after it inherits the single identifier.</figcaption>
   </figure>
   <ul>
-    <li>Bronze keeps the source shape so any silver rule can be re run without going back to the systems.</li>
-    <li>Silver conforms each source independently — dates, codes and status become one vocabulary, but a patient from <code>lis_a</code> and the same patient from <code>ris</code> are still two separate rows at this point.</li>
-    <li>Graph resolves identity across systems. This is the prototype's implementation of A1's Recommendation R1: a deterministic Medicare-number-plus-date-of-birth match modelled as a graph, rather than the fuller probabilistic matching a production master patient index would use.</li>
-    <li>Gold is the only layer dashboards read. Identifying details and raw source keys are removed here; patients are addressed only by the graph's golden id.</li>
-    <li>Audit follows the Workshop 6 pattern: one run record per load with counts and status. Validate is the evidence trail for end-to-end testing — orphan-record checks, bronze-to-silver row-count reconciliation, and the raw-vs-golden identifier count that is also the headline MPI dashboard metric (see <code>diagnostics_source_schemas.sql</code>, queries V1–V4).</li>
+    <li>Bronze proves the fragmentation: three patient tables, three id formats, three date formats, side by side.</li>
+    <li>Silver step 2 is the only place identity is decided. Clinical entities in step 3 look up <code>mpi_id</code> through the crosswalk and never carry a source patient id forward on its own.</li>
+    <li>Gold has exactly one patient dimension row per person. A pathology result from lis_a, a result from lis_b and a CT from ris for the same person all join to the same <code>patient_key</code>.</li>
+    <li>Audit adds MPI specific measures to the workshop pattern: records matched per tier, records left unmatched, and Medicare numbers found in more than one cluster (which should always be zero).</li>
+    <li>Known limits for the report: deterministic rules cannot recover from a mistyped Medicare number or date of birth, and <code>mpi_id</code> values are regenerated on each full rebuild. A production build adds probabilistic scoring, a steward review queue, and persistent identifiers.</li>
+  </ul>
+</section>
+
+<section id="dashboard">
+  <h2>4. Dashboard layer</h2>
+  <p class="lead">Three pre-aggregated SQL views sit on top of the gold layer in a <code>dashboard</code> schema. A Metabase instance (<code>http://localhost:3030</code>) renders them as interactive bar charts. No BI-tool user ever touches a fact table directly.</p>
+
+  <h3>Views in the <code>dashboard</code> schema  (<code>pipeline/08_dashboard_views.sql</code>)</h3>
+  <table>
+    <thead><tr><th>View</th><th>Source tables</th><th>What it answers</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>v_turnaround</code></td>
+        <td><code>fact_pathology_result</code>, <code>fact_imaging_study</code>, <code>dim_site</code>, <code>dim_date</code></td>
+        <td>Average, median (p50) and 90th-percentile (p90) turnaround time in minutes, broken down by site, priority (ROUTINE / URGENT), request type (PATHOLOGY / IMAGING), year and month. Both request types are unified with a <code>UNION ALL</code> so one view covers the whole service. Imaging <code>turnaround_hours</code> is multiplied by 60 so both streams share the same minute scale.</td>
+      </tr>
+      <tr>
+        <td><code>v_abnormal_rate</code></td>
+        <td><code>fact_pathology_result</code>, <code>fact_imaging_study</code>, <code>dim_site</code>, <code>dim_date</code>, <code>dim_test</code>, <code>dim_procedure</code></td>
+        <td>Abnormal result percentage for pathology tests (<code>is_abnormal</code>) and critical finding rate for imaging studies (<code>critical_finding</code>), by site, test or procedure code, year and month. <code>NULL</code> fills keep both streams in one view schema — pathology rows carry <code>NULL</code> for <code>critical_count</code> and imaging rows carry <code>NULL</code> for <code>abnormal_count</code>.</td>
+      </tr>
+      <tr>
+        <td><code>v_mpi_impact</code></td>
+        <td><code>silver.patient_source</code>, <code>gold.dim_patient</code>, <code>silver.patient_xref</code></td>
+        <td>Headline MPI metrics in a single row: raw source identifiers, golden patients, duplicates collapsed, collapse rate %, and a count breakdown by match basis (Tier 1 <code>medicare+dob</code>, Tier 2 <code>name+dob+sex</code>, <code>unmatched (single source)</code>). This view crosses silver and gold — it is the only place in the dashboard schema that reads silver tables.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Metabase charts  (<code>http://localhost:3030</code>)</h3>
+  <p>Three charts are assembled into the <strong>MedScan Diagnostics Dashboard</strong>. Each chart is a native SQL question pointing at one view.</p>
+  <table>
+    <thead><tr><th>Chart</th><th>View</th><th>Chart type</th><th>Key finding on the synthetic dataset</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Abnormal Rate by Test (Pathology)</td>
+        <td><code>v_abnormal_rate</code></td>
+        <td>Bar chart</td>
+        <td>Average abnormal % per test name, pathology only, sorted descending. Shows which tests produce the most out-of-range results across all sites — Haemoglobin sits at the top of the synthetic data.</td>
+      </tr>
+      <tr>
+        <td>Turnaround Time by Site (Pathology)</td>
+        <td><code>v_turnaround</code></td>
+        <td>Grouped bar chart (ROUTINE vs URGENT)</td>
+        <td>Average turnaround in minutes per site. ROUTINE bars are consistently higher than URGENT, confirming that priority triage is working as designed across all collection centres.</td>
+      </tr>
+      <tr>
+        <td>MPI Impact Summary</td>
+        <td><code>v_mpi_impact</code></td>
+        <td>Bar chart</td>
+        <td>Raw identifiers (108) vs golden patients (63) vs duplicates collapsed (45). The 41.7 % collapse rate is the headline evidence that the MPI is working — without it, every cross-system query would double- or triple-count the same person.</td>
+      </tr>
+    </tbody>
+  </table>
+  <ul>
+    <li>All three views read only from <code>gold</code> (and <code>silver</code> for <code>v_mpi_impact</code> metadata). No PII reaches the BI layer because <code>dim_patient</code> carries no names, dates of birth, or Medicare numbers.</li>
+    <li>The views are idempotent: <code>08_dashboard_views.sql</code> drops and recreates them on every pipeline run, so schema changes in gold flow through automatically on the next run.</li>
+    <li>Metabase connects to the <code>medscan</code> database as <code>student / student</code> on host <code>postgres</code>, port <code>5432</code>. Charts are saved as native SQL questions and persist across restarts via the <code>./data/metabase</code> Docker volume.</li>
+    <li>The Metabase service is defined in <code>docker-compose.yml</code> (port 3030 on the host, 3000 inside the container) and depends on the <code>postgres</code> service so it starts only after the database is ready.</li>
   </ul>
 </section>
 
 </main>
 
-<footer>Synthetic data. Regulatory names are design context, not advice. Extends the layered architecture recommended in Assignment 1 (data lake, data vault, graph, dimensional marts) with bronze/silver/gold standing in for the data lake and data vault, and Neo4j implementing the graph identity layer.</footer>
+<footer>Synthetic data and identifiers throughout. Matching rules are illustrative and would be validated against real data quality before use.</footer>
 
 <script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
