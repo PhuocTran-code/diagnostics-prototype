@@ -103,6 +103,14 @@ docker-compose.yml         postgres 15 · cloudbeaver · metabase · python  (4 
 
 ---
 
+## Demo video
+
+End-to-end walkthrough: pipeline run → CloudBeaver layer browse → Metabase dashboard charts.
+
+**https://youtu.be/Nzep7u9PA1o**
+
+---
+
 ## Quick start
 
 ### Requirements
